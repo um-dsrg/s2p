@@ -1,6 +1,12 @@
-# Copyright (C) 2015, Carlo de Franchis <carlo.de-franchis@cmla.ens-cachan.fr>
-# Copyright (C) 2015, Gabriele Facciolo <facciolo@cmla.ens-cachan.fr>
-# Copyright (C) 2015, Enric Meinhardt <enric.meinhardt@cmla.ens-cachan.fr>
+"""
+* affine triangulation
+* display point clouds
+* DEM projection
+
+Copyright (C) 2018, Enric Meinhardt-Llopis <enric.meinhardt@cmla.ens-cachan.fr>
+Copyright (C) 2018, Carlo de Franchis <carlo.de-franchis@ens-cachan.fr>
+Copyright (C) 2018, Gabriele Facciolo <facciolo@cmla.ens-cachan.fr>
+"""
 
 import os
 import ctypes
@@ -8,15 +14,15 @@ from ctypes import c_int, c_float, c_double, byref, POINTER
 from numpy.ctypeslib import ndpointer
 import numpy as np
 from scipy import ndimage
-import rasterio
 
-from s2p import common
-from s2p.config import cfg
-from s2p import ply
-from s2p import geographiclib
+import libs2p.common
+from libs2p.config import cfg
+import sys
 
 here = os.path.dirname(os.path.abspath(__file__))
-lib_path = os.path.join(os.path.dirname(here), 'lib', 'disp_to_h.so')
+#lib_path = os.path.join(os.path.dirname(here), 'lib', 'disp_to_h.so')
+version = sys.version_info
+lib_path = os.path.join(sys.prefix, 'lib/python%d.%d/site-packages/'%(int(version[0]),int(version[1])), 'lib', 'disp_to_h.so')
 lib = ctypes.CDLL(lib_path)
 
 
@@ -78,7 +84,8 @@ class RPCStruct(ctypes.Structure):
                 self.deny[i] = np.nan
 
 
-def disp_to_xyz(rpc1, rpc2, H1, H2, disp, mask, out_crs=None, img_bbx=None, A=None):
+
+def disp_to_xyz(rpc1, rpc2, H1, H2, disp, mask, utm_zone, img_bbx=None, A=None):
     """
     Compute a height map from a disparity map, using RPC camera models.
 
@@ -87,16 +94,15 @@ def disp_to_xyz(rpc1, rpc2, H1, H2, disp, mask, out_crs=None, img_bbx=None, A=No
         H1, H2 (arrays): 3x3 numpy arrays defining the rectifying homographies
         disp, mask (array): 2D arrays of shape (h, w) representing the diparity
             and mask maps
-        out_crs (pyproj.crs.CRS): object defining the desired coordinate reference system for the
+        utm_zone (int): desired UTM zone number (between 1 and 60) for the
             output xyz map
         img_bbx (4-tuple): col_min, col_max, row_min, row_max defining the
             unrectified image domain to process.
         A (array): 3x3 array with the pointing correction matrix for im2
 
     Returns:
-        xyz: array of shape (h, w, 3) where each pixel contains the 3D
-            coordinates of the triangulated point in the coordinate system 
-            defined by `out_crs`
+        xyz: array of shape (h, w, 3) where each pixel contains the UTM
+            easting, northing, and altitude of the triangulated point.
         err: array of shape (h, w) where each pixel contains the triangulation
             error
     """
@@ -111,9 +117,9 @@ def disp_to_xyz(rpc1, rpc2, H1, H2, disp, mask, out_crs=None, img_bbx=None, A=No
     if img_bbx is None:
         img_bbx = (-np.inf, np.inf, -np.inf, np.inf)
 
-    # define the argument types of the disp_to_lonlatalt function from disp_to_h.so
+    # define the argument types of the disp_to_xyz function from disp_to_h.so
     h, w = disp.shape
-    lib.disp_to_lonlatalt.argtypes = (ndpointer(dtype=c_double, shape=(h, w, 3)),
+    lib.disp_to_xyz.argtypes = (ndpointer(dtype=c_float, shape=(h, w, 3)),
                                 ndpointer(dtype=c_float, shape=(h, w)),
                                 ndpointer(dtype=c_float, shape=(h, w)),
                                 ndpointer(dtype=c_float, shape=(h, w)),
@@ -121,245 +127,183 @@ def disp_to_xyz(rpc1, rpc2, H1, H2, disp, mask, out_crs=None, img_bbx=None, A=No
                                 c_int, c_int,
                                 ndpointer(dtype=c_double, shape=(9,)),
                                 ndpointer(dtype=c_double, shape=(9,)),
-                                POINTER(RPCStruct), POINTER(RPCStruct),
+                                POINTER(RPCStruct), POINTER(RPCStruct), c_int,
                                 ndpointer(dtype=c_float, shape=(4,)))
 
 
-    # call the disp_to_lonlatalt function from disp_to_h.so
-    lonlatalt =  np.zeros((h, w, 3), dtype='float64')
+    # call the disp_to_xyz function from disp_to_h.so
+    xyz =  np.zeros((h, w, 3), dtype='float32')
     err =  np.zeros((h, w), dtype='float32')
     dispx = disp.astype('float32')
     dispy = np.zeros((h, w), dtype='float32')
     msk = mask.astype('float32')
-    lib.disp_to_lonlatalt(lonlatalt, err, dispx, dispy, msk, w, h,
+    lib.disp_to_xyz(xyz, err, dispx, dispy, msk, w, h,
                     H1.flatten(), H2.flatten(),
-                    byref(rpc1_c_struct), byref(rpc2_c_struct),
+                    byref(rpc1_c_struct), byref(rpc2_c_struct), utm_zone,
                     np.asarray(img_bbx, dtype='float32'))
 
-    # output CRS conversion
-    in_crs = geographiclib.pyproj_crs("epsg:4979")
-
-    if out_crs and out_crs != in_crs:
-
-        # reshape the lonlatlat array into a 3-column 2D-array
-        lonlatalt = lonlatalt.reshape(-1, 3)
-
-        x, y, z = geographiclib.pyproj_transform(lonlatalt[:, 0], lonlatalt[:, 1],
-                                                 in_crs, out_crs, lonlatalt[:, 2])
-
-        xyz_array = np.column_stack((x, y, z)).reshape(h, w, 3).astype(np.float32)
-    else:
-        xyz_array = lonlatalt
-
-    return xyz_array, err
+    return xyz, err
 
 
-def count_3d_neighbors(xyz, r, p):
+def triangulation_affine(PA, PB, x1, y1, x2, y2):
     """
-    Count 3D neighbors of a gridded set of 3D points.
+    Triangulate a (list of) match(es) between two images of affine cameras.
 
-    Args:
-        xyz (array): 3D array of shape (h, w, 3) where each pixel contains the
-            UTM easting, northing, and altitude of a 3D point.
-        r (float): filtering radius, in the unit of the CRS (ex: meters)
-        p (int): the filering window has size 2p + 1, in pixels
+    Arguments:
+        PA, PB : affine (projection) camera matrices of the two images
+        x1, y1 : pixel coordinates in the domain of the first image
+        x2, y2 : pixel coordinates in the domain of the second image
 
-    Returns:
-        array of shape (h, w) with the count of the number of 3D points located
-        less than r units from the current 3D point
+    Return value: a 4-tuple (lon, lat, h, e)
+        lon, lat, h, e : coordinates of the 3D point(s), reprojection error
     """
-    h, w, d = xyz.shape
-    assert(d == 3)
 
-    # define the argument types of the count_3d_neighbors function from disp_to_h.so
-    lib.count_3d_neighbors.argtypes = (ndpointer(dtype=c_int, shape=(h, w)),
-                                       ndpointer(dtype=c_float, shape=(h, w, 3)),
-                                       c_int, c_int, c_float, c_int)
+    # build projection and localization matrices as 4x4 homogeneous maps
+    # (x,y,h,1) <-> (lon,lat,h,1)
+    PA = np.vstack([ PA[0:2], [0,0,1,0], [0,0,0,1]])  # pick only first two rows
+    PB = np.vstack([ PB[0:2], [0,0,1,0], [0,0,0,1]])  # pick only first two rows
+    LA = np.linalg.inv(PA)  # inverse of a 4x4 matrix
 
-    # call the count_3d_neighbors function from disp_to_h.so
-    out = np.zeros((h, w), dtype='int32')
-    lib.count_3d_neighbors(out, np.ascontiguousarray(xyz), w, h, r, p)
+    # affine epipolar correspondence
+    E = PB @ LA
 
-    return out
+    # Now, the linear system E * (x1, y1, h, 1) = (x2, y2, h, 1)
+    # has two different equations and one unknown h.  We solve it by
+    # least squares (a simple projection, in this case).
+
+    # give names to the 8 non-trivial coefficients of E
+    a, b, p, r = E[0]
+    c, d, q, s = E[1]
+
+    # coefficients of the affine triangulation
+    f = [-p*a - q*c, -p*b - q*d, p, q, -p*r - q*s ] / (p*p + q*q)
+
+    # apply the triangulation (first use of the input points)
+    h = f[0]*x1 + f[1]*y1 + f[2]*x2 + f[3]*y2 + f[4]
+
+    # finish the computation and return the 4 required numbers (or vectors)
+    lon = LA[0,0] * x1 + LA[0,1] * y1 + LA[0,2] * h + LA[0,3]
+    lat = LA[1,0] * x1 + LA[1,1] * y1 + LA[1,2] * h + LA[1,3]
+    ex = E[0,0] * x1 + E[0,1] * y1 + E[0,2] * h + E[0,3] - x2
+    ey = E[1,0] * x1 + E[1,1] * y1 + E[1,2] * h + E[1,3] - y2
+    e = ex * ex + ey * ey
+    return lon, lat, h, e
 
 
-def remove_isolated_3d_points(xyz, r, p, n, q=1):
+def rastio_z(row,col,xyz,x,y):
     """
-    Discard (in place) isolated (groups of) points in a gridded set of 3D points
+    mchen 12,March,2020
 
-    Discarded points satisfy the following conditions:
-    - they have less than n 3D neighbors in a ball of radius r units (ex: meters);
-    - all their neighboring points of the grid in a square window of size 2q+1
-      that are closer than r units are also discarded.
-
-    Args:
-        xyz (array): 3D array of shape (h, w, 3) where each pixel contains the
-            UTM easting, northing, and altitude of a 3D point.
-        r (float): filtering radius, in the unit of the CRS (ex: meters)
-        p (int): filering window radius, in pixels (square window of size 2p+1)
-        n (int): filtering threshold, in number of points
-        q (int): 2nd filtering window radius, in pixels (square of size 2q+1)
+    :param dmap: a disparity map between two rectified images
+    :param xyz:  a matrix of size Nx3 (where N is the number of finite disparites
+              in dmap) this matrix contains the coordinates of the 3d points in
+              "lon,lat,h" or "e,n,h"
+    :return:
     """
-    h, w, d = xyz.shape
-    assert d == 3, 'expecting a 3-channels image with shape (h, w, 3)'
 
-    lib.remove_isolated_3d_points.argtypes = (
-        ndpointer(dtype=c_float, shape=(h, w, 3)),
-        c_int, c_int, c_float, c_int, c_int, c_int)
+    xyh = np.full((row,col),0,dtype=int)
+    scale_x = x.shape[0]
+    for k in range(scale_x):
+        i = y[k]
+        j = x[k]
+        xyh[i][j]=np.round(xyz[k][2])
 
-    lib.remove_isolated_3d_points(np.ascontiguousarray(xyz), w, h, r, p, n, q)
+    return xyh
 
 
-def filter_xyz(xyz, r, n, img_gsd):
+def triangulate_disparities(dmap, rpc1, rpc2, S1, S2, PA, PB,):
     """
-    Discard (in place) points that have less than n points closer than r units (ex: meters).
+    Triangulate a disparity map
 
-    Args:
-        xyz (array): 3D array of shape (h, w, 3) where each pixel contains the
-            UTM easting, northing, and altitude of a 3D point.
-        r (float): filtering radius, in the unit of the CRS (ex: meters)
-        n (int): filtering threshold, in number of points
-        img_gsd (float): ground sampling distance, in units of the CRS (ex: meters) / pix
+    Arguments:
+        dmap : a disparity map between two rectified images
+        rpc1, rpc2 : calibration data of each image
+        S1, S2 : rectifying affine maps (from the domain of the fullsize images)
+        PA, PB : the affine approximations of rpc1 and rpc2 (not always used)
+
+    Return:
+        xyz : a matrix of size Nx3 (where N is the number of finite disparites
+              in dmap) this matrix contains the coordinates of the 3d points in
+              "lon,lat,h" or "e,n,h"
     """
-    p = np.ceil(r / img_gsd).astype(int)
-    remove_isolated_3d_points(xyz, r, p, n)
+    from libs2p.utils import utm_from_lonlat
+
+    # 1. unroll all the valid (finite) disparities of dmap into a vector
+    m = np.isfinite(dmap.flatten())
+    x = np.argwhere(np.isfinite(dmap))[:,1]  # attention to order of the indices
+    y = np.argwhere(np.isfinite(dmap))[:,0]
+    d = dmap.flatten()[m]
+
+    # 2. for each disparity
+
+    # 2.1. produce a pair in the original domain by composing with S1 and S2
+    p = np.linalg.inv(S1) @ np.vstack( (x+0, y, np.ones(len(d))) )
+    q = np.linalg.inv(S2) @ np.vstack( (x+d, y, np.ones(len(d))) )
+
+    # 2.2. triangulate the pair of image points to find a 3D point (in UTM)
+    lon, lat, h, e = triangulation_affine(PA,PB, p[0,:],p[1,:], q[0,:],q[1,:])
+    #east, north, _, _ = np.vectorize(utm.from_latlon)(lat, lon)
+    east, north = utm_from_lonlat(lon, lat)
+
+    # 2.3. add this point to the output list
+    xyz = np.vstack((east, north, h)).T
+
+    # mChen 2020.3.12 just for display
+    xyh = rastio_z(dmap.shape[0],dmap.shape[1],xyz,x,y)
+
+    return xyz, xyh
 
 
-def height_map(x, y, w, h, rpc1, rpc2, H1, H2, disp, mask, A=None):
+# code for projection into UTM coordinates
+from numba import jit
+
+# utility function for computing the average at each cell
+@jit
+def reduceavg(w, h,  ix, iy, z):
+    D_sum = np.zeros((h,w))  #-np.ones((h,w))*np.inf
+    D_cnt = np.zeros((h,w))
+    for t in range(len(ix)):
+        if iy[t]<0 or ix[t]<0 or iy[t]>=h or ix[t]>=w:
+            continue
+        ty = iy[t]
+        tx = ix[t]
+        D_sum[ty,tx] += z[t]
+        D_cnt[ty,tx] += 1
+
+    D_sum /= D_cnt*(D_cnt>0) + 1*(D_cnt==0) # needed for computing average
+
+    return D_sum
+
+
+# projects them into a grid defined by the bunding box (emin, emax, nmin, nmax)
+def project_cloud_into_utm_grid(xyz, emin, emax, nmin, nmax, resolution=1):
     """
-    Computes an altitude map, on the grid of the original reference image, from
-    a disparity map given on the grid of the rectified reference image.
+    Project a point cloud into an utm grid to produce a DEM
+    The algorithm averages all the points that fall into each square of the grid
 
-    Args:
-        x, y, w, h (ints): rectangular AOI in the original image. (x, y) is the
-            top-left corner, and (w, h) are the dimensions of the rectangle.
-        rpc1, rpc2 (rpcm.RPCModel): camera models
-        H1, H2 (arrays): 3x3 numpy arrays defining the rectifying homographies
-        disp, mask (array): 2D arrays of shape (h, w) representing the diparity
-            and mask maps
-        A (array): 3x3 array with the pointing correction matrix for im2
+    Arguments:
+        xyz : a Nx3 matrix representing a point cloud in (lon,lat,h) coordinates
+        emin,emax,nmin,nmax : a bounding box in UTM coordinates
+        resolution : the target resolution in meters (by default, 1 meter)
 
-    Returns:
-        array of shape (h, w) with the height map
+    Return:
+        dem : a 2D array of heights in meters
     """
-    xyz, err = disp_to_xyz(rpc1, rpc2, H1, H2, disp, mask, A=A)
-    height_map = xyz[:, :, 2].squeeze()
 
-    # transfer the rectified height map onto an unrectified height map
-    H = np.dot(H1, common.matrix_translation(x, y))
-    out = ndimage.affine_transform(np.nan_to_num(height_map).T, H,
-                                   output_shape=(w, h), order=1).T
+    # width and height of the image domain
+    w = int(np.ceil((emax - emin)/resolution))
+    h = int(np.ceil((nmax - nmin)/resolution))
 
-    # nearest-neighbor interpolation of nan locations in the resampled image
-    if np.isnan(height_map).any():
-        i = ndimage.affine_transform(np.isnan(height_map).T, H,
-                                     output_shape=(w, h), order=0).T
-        i = ndimage.binary_dilation(i, structure=np.ones((3, 3)))
-        out[i] = np.nan  # put nans back in the resampled image
+    # extract and quantize columns
+    x = xyz[:,0]
+    y = xyz[:,1]
+    z = xyz[:,2]
 
-    return out
+    ix = np.asarray((x - emin)/resolution, dtype="int")
+    iy = np.asarray((nmax - y)/resolution, dtype="int")
 
+    # per-cell average
+    dem = reduceavg (w,h,  ix, iy, z )
 
-def filter_xyz_and_write_to_ply(path_to_ply_file, xyz, r, n, img_gsd, colors='', proj_com='', confidence=''):
-    """
-    Filter points that have less than n points closer than r units (ex: meters) and write them in a .ply file
+    return dem
 
-    Args:
-        path_to_ply_file (str): path to a .ply file
-        xyz (array): 3D array of shape (h, w, 3) where each pixel contains the
-            x, y, and z  coordinates of a 3D point.
-        r (float): filtering radius, in the unit of the CRS (ex: meters)
-        n (int): filtering threshold, in number of points
-        img_gsd (float): ground sampling distance, in units of the CRS (ex: meters) / pix
-        colors (optional, default ''): path to a colorized image
-        proj_com (str): projection comment in the .ply file
-        confidence (optional, default ''): path to an image containig a confidence map
-    """
-    # 3D filtering
-    if r and n:
-        filter_xyz(xyz, r, n, img_gsd)
-
-    # flatten the xyz array into a list and remove nan points
-    xyz_list = xyz.reshape(-1, 3)
-    valid = np.all(np.isfinite(xyz_list), axis=1)
-
-    # write the point cloud to a ply file
-    if colors:
-        with rasterio.open(colors, 'r') as f:
-            img = f.read()
-        colors_list = img.transpose(1, 2, 0).reshape(-1, img.shape[0])[valid]
-    else:
-        colors_list = None
-
-    # read extra field (confidence) if present
-    if confidence != '':
-        with rasterio.open(confidence, 'r') as f:
-            img = f.read()
-        extra_list  = img.flatten()[valid].astype(np.float32)
-        extra_names = ['confidence']
-    else:
-        extra_list  = None
-        extra_names = None
-
-    # write the point cloud to a ply file
-    ply.write_3d_point_cloud_to_ply(path_to_ply_file, xyz_list[valid],
-                                    colors=colors_list,
-                                    extra_properties=extra_list,
-                                    extra_properties_names=extra_names,
-                                    comments=["created by S2P",
-                                              "projection: {}".format(proj_com)])
-
-
-def height_map_to_point_cloud(cloud, heights, rpc, off_x=None, off_y=None, crop_colorized=''):
-    """
-    Computes a color point cloud from a height map.
-
-    Args:
-        cloud: path to the output points cloud (ply format)
-        heights: height map, sampled on the same grid as the crop_colorized
-            image. In particular, its size is the same as crop_colorized.
-        rpc: instances of the rpcm.RPCModel class
-        off_{x,y} (optional, default None): coordinates of the origin of the crop
-            we are dealing with in the pixel coordinates of the original full
-            size image
-        crop_colorized (optional, default ''): path to a colorized crop of a
-            Pleiades image
-    """
-    with rasterio.open(heights) as src:
-        h_map = src.read(1)
-        h, w = h_map.shape
-
-    heights = h_map.ravel()
-    indices = np.indices((h, w))
-
-    non_nan_ind = np.where(~np.isnan(heights))[0]
-
-    alts = heights[non_nan_ind]
-    cols = indices[1].ravel()[non_nan_ind]
-    rows = indices[0].ravel()[non_nan_ind]
-
-    if off_x or off_y:
-        cols = cols + (off_x or 0)
-        rows = rows + (off_y or 0)
-
-    # localize pixels
-    lons = np.empty_like(heights, dtype=np.float64)
-    lats = np.empty_like(heights, dtype=np.float64)
-    lons[non_nan_ind], lats[non_nan_ind] = rpc.localization(cols, rows, alts)
-
-    # output CRS conversion
-    in_crs = geographiclib.pyproj_crs("epsg:4979")
-    out_crs = geographiclib.pyproj_crs(cfg['out_crs'])
-    proj_com = "CRS {}".format(cfg['out_crs'])
-
-    if out_crs != in_crs:
-        x, y, z = geographiclib.pyproj_transform(lons, lats,
-                                                 in_crs, out_crs, heights)
-    else:
-        x, y, z = lons, lats, heights
-
-    xyz_array = np.column_stack((x, y, z)).reshape(h, w, 3)
-
-    filter_xyz_and_write_to_ply(cloud, xyz_array,
-                                              cfg['3d_filtering_r'], cfg['3d_filtering_n'],
-                                              cfg['gsd'], crop_colorized, proj_com)

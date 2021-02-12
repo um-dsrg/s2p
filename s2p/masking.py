@@ -3,12 +3,13 @@
 # Copyright (C) 2015, Enric Meinhardt <enric.meinhardt@cmla.ens-cachan.fr>
 # Copyright (C) 2015, Julien Michel <julien.michel@cnes.fr>
 
+import os
 import subprocess
 import numpy as np
 import warnings
 import rasterio
 
-from s2p import common
+import libs2p.common
 
 # silent rasterio NotGeoreferencedWarning
 warnings.filterwarnings("ignore",
@@ -38,7 +39,7 @@ def image_tile_mask(x, y, w, h, roi_gml=None, cld_gml=None, raster_mask=None,
     x, y, w, h = map(int, (x, y, w, h))
 
     # coefficients of the transformation associated to the crop
-    H = common.matrix_translation(-x, -y)
+    H = libs2p.common.matrix_translation(-x, -y)
     hij = ' '.join([str(el) for el in H.flatten()])
 
     mask = np.ones((h, w), dtype=np.bool)
@@ -77,7 +78,7 @@ def image_tile_mask(x, y, w, h, roi_gml=None, cld_gml=None, raster_mask=None,
         m[-border_margin:] = 0  # last rows
         m[:, :border_margin] = 0  # first columns
         m[:, -border_margin:] = 0  # last columns
-        mask = np.logical_and(mask, common.crop_array(m, x, y, w, h))
+        mask = np.logical_and(mask, libs2p.common.crop_array(m, x, y, w, h))
 
     return mask
 

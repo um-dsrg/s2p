@@ -6,11 +6,12 @@
 
 import os
 import numpy as np
+import rpcm
 
-from s2p import sift
-from s2p import rpc_utils
-from s2p import estimation
-from s2p.config import cfg
+import libs2p.sift
+import libs2p.rpc_utils
+import libs2p.estimation
+from libs2p.config import cfg
 
 
 def error_vectors(m, F, ind='ref'):
@@ -80,8 +81,8 @@ def local_translation(r1, r2, x, y, w, h, m):
     """
     # estimate the affine fundamental matrix between the two views
     n = cfg['n_gcp_per_axis']
-    rpc_matches = rpc_utils.matches_from_rpc(r1, r2, x, y, w, h, n)
-    F = estimation.affine_fundamental_matrix(rpc_matches)
+    rpc_matches = libs2p.rpc_utils.matches_from_rpc(r1, r2, x, y, w, h, n)
+    F = libs2p.estimation.affine_fundamental_matrix(rpc_matches)
 
     # compute the error vectors
     e = error_vectors(m, F, 'sec')
@@ -99,8 +100,7 @@ def local_translation(r1, r2, x, y, w, h, m):
     return A
 
 
-def compute_correction(img1, img2, rpc1, rpc2, x, y, w, h,
-                       method, sift_thresh, epipolar_threshold):
+def compute_correction(img1, img2, rpc1, rpc2, x, y, w, h):
     """
     Computes pointing correction matrix for specific ROI
 
@@ -113,16 +113,13 @@ def compute_correction(img1, img2, rpc1, rpc2, x, y, w, h,
             image. (x, y) is the top-left corner, and (w, h) are the dimensions
             of the rectangle. The ROI may be as big as you want. If bigger than
             1 Mpix, only five crops will be used to compute sift matches.
-        method, sift_thresh, epipolar_threshold: see docstring of
-            s2p.sift.keypoints_match()
 
     Returns:
         a 3x3 matrix representing the planar transformation to apply to img2 in
         order to correct the pointing error, and the list of sift matches used
         to compute this correction.
     """
-    m = sift.matches_on_rpc_roi(img1, img2, rpc1, rpc2, x, y, w, h,
-                                method, sift_thresh, epipolar_threshold)
+    m = libs2p.sift.matches_on_rpc_roi(img1, img2, rpc1, rpc2, x, y, w, h)
 
     if m is not None:
         A = local_translation(rpc1, rpc2, x, y, w, h, m)
@@ -170,7 +167,7 @@ def global_from_local(tiles):
         return A
     elif len(x) == 2:
         #TODO: replace translation with similarity
-        return estimation.translation(np.array(x), np.array(xx))
+        return libs2p.estimation.translation(np.array(x), np.array(xx))
     else:
         # estimate an affine transformation transforming x in xx
-        return estimation.affine_transformation(np.array(x), np.array(xx))
+        return libs2p.estimation.affine_transformation(np.array(x), np.array(xx))

@@ -5,6 +5,8 @@
 
 import numpy as np
 
+import libs2p.common
+
 
 def fundamental_matrix_cameras(P1, P2):
     """

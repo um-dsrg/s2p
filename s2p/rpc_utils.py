@@ -3,16 +3,19 @@
 # Copyright (C) 2015, Enric Meinhardt <enric.meinhardt@cmla.ens-cachan.fr>
 
 
+import bs4
+import json
+import datetime
+import pyproj
 import warnings
 import rasterio
 import numpy as np
 
 import rpcm
-import srtm4
 
-from s2p import geographiclib
-from s2p import common
-from s2p.config import cfg
+import libs2p.geographiclib
+import libs2p.common
+from libs2p.config import cfg
 
 warnings.filterwarnings("ignore", category=rasterio.errors.NotGeoreferencedWarning)
 
@@ -160,10 +163,10 @@ def min_max_heights_from_bbx(im, lon_m, lon_M, lat_m, lat_M, rpc):
     dataset = rasterio.open(im, 'r')
 
     # convert lon/lat to im projection
-    x_im_proj, y_im_proj = geographiclib.pyproj_transform([lon_m, lon_M],
-                                                          [lat_m, lat_M],
-                                                          4326,
-                                                          dataset.crs.to_epsg())
+    x_im_proj, y_im_proj = pyproj.transform(pyproj.Proj(init='epsg:4326'),
+                                            pyproj.Proj(init=dataset.crs['init']),
+                                            [lon_m, lon_M],
+                                            [lat_m, lat_M])
 
     # convert im projection to pixel
     pts = []
@@ -196,9 +199,9 @@ def min_max_heights_from_bbx(im, lon_m, lon_M, lat_m, lat_M, rpc):
         hmax = np.nanmax(array)
 
         if cfg['exogenous_dem_geoid_mode'] is True:
-            offset = geographiclib.geoid_to_ellipsoid((lat_m + lat_M)/2, (lon_m + lon_M)/2, 0)
-            hmin += offset
-            hmax += offset
+            geoid = geographiclib.geoid_above_ellipsoid((lat_m + lat_M)/2, (lon_m + lon_M)/2)
+            hmin += geoid
+            hmax += geoid
         return hmin, hmax
     else:
         print("WARNING: rpc_utils.min_max_heights_from_bbx: access window out of range")
@@ -239,14 +242,6 @@ def altitude_range(rpc, x, y, w, h, margin_top=0, margin_bottom=0):
                                             lon_m, lon_M, lat_m, lat_M, rpc)
         h_m += margin_bottom
         h_M += margin_top
-    elif cfg['use_srtm']:
-        s = 0.001 / 12  # SRTM90 pixel spacing is 0.001 / 12 degrees
-        points = [(lon, lat) for lon in np.arange(lon_m, lon_M, s)
-                             for lat in np.arange(lat_m, lat_M, s)]
-        lons, lats = np.asarray(points).T
-        alts = srtm4.srtm4(lons, lats)  # TODO use srtm4 nn interpolation option
-        h_m = min(alts) + margin_bottom
-        h_M = max(alts) + margin_top
     else:
         h_m, h_M = altitude_range_coarse(rpc, cfg['rpc_alt_range_scale_factor'])
 
@@ -277,42 +272,131 @@ def utm_zone(rpc, x, y, w, h):
     return geographiclib.compute_utm_zone(lon, lat)
 
 
-def roi_process(rpc, ll_poly, use_srtm=False, exogenous_dem=None,
-                exogenous_dem_geoid_mode=True):
+def utm_roi_to_img_roi(rpc, roi):
     """
-    Convert a (lon, lat) polygon into a rectangular bounding box in image space.
+    """
+    # define utm rectangular box
+    x, y, w, h = [roi[k] for k in ['x', 'y', 'w', 'h']]
+    box = [(x, y), (x+w, y), (x+w, y+h), (x, y+h)]
+
+    # convert utm to lon/lat
+    utm_proj = geographiclib.utm_proj("{}{}".format(roi['utm_band'], roi['hemisphere']))
+    box_lon, box_lat = pyproj.transform(
+        utm_proj, pyproj.Proj(init="epsg:4326"), [p[0] for p in box], [p[1] for p in box]
+    )
+
+    # project lon/lat vertices into the image
+    if not isinstance(rpc, rpcm.RPCModel):
+        rpc = rpcm.RPCModel(rpc)
+    img_pts = rpc.projection(box_lon, box_lat, rpc.alt_offset)
+
+    # return image roi
+    x, y, w, h = common.bounding_box2D(img_pts)
+    return {'x': x, 'y': y, 'w': w, 'h': h}
+
+
+def kml_roi_process(rpc, kml, utm_zone=None):
+    """
+    Define a rectangular bounding box in image coordinates
+    from a polygon in a KML file
 
     Args:
-        rpc (rpcm.RPCModel): camera model
-        ll_poly (array): 2D array of shape (n, 2) containing the vertices
-            (longitude, latitude) of the polygon
-        use_srtm (bool): whether or not to use SRTM DEM to estimate the
-            average ground altitude of the ROI.
+        rpc: instance of the rpcm.RPCModel class, or path to the xml file
+        kml: file path to a KML file containing a single polygon
+        utm_zone: force the zone number to be used when defining `utm_bbx`.
+            If not specified, the default UTM zone for the given geography
+            is used.
 
     Returns:
         x, y, w, h: four integers defining a rectangular region of interest
             (ROI) in the image. (x, y) is the top-left corner, and (w, h)
             are the dimensions of the rectangle.
     """
-    if use_srtm and (exogenous_dem is not None):
-        raise ValueError("use_srtm and exogenous_dem are mutually exclusive")
+    # extract lon lat from kml
+    with open(kml, 'r') as f:
+        a = bs4.BeautifulSoup(f, "lxml").find_all('coordinates')[0].text.split()
+    ll_poly = np.array([list(map(float, x.split(','))) for x in a])[:, :2]
+    box_d = roi_process(rpc, ll_poly, utm_zone=utm_zone)
+    return box_d
+
+
+def geojson_roi_process(rpc, geojson, utm_zone=None):
+    """
+    Define a rectangular bounding box in image coordinates
+    from a polygon in a geojson file or dict
+
+    Args:
+        rpc: instance of the rpcm.RPCModel class, or path to the xml file
+        geojson: file path to a geojson file containing a single polygon,
+            or content of the file as a dict.
+            The geojson's top-level type should be either FeatureCollection,
+            Feature, or Polygon.
+        utm_zone: force the zone number to be used when defining `utm_bbx`.
+            If not specified, the default UTM zone for the given geography
+            is used.
+
+    Returns:
+        x, y, w, h: four integers defining a rectangular region of interest
+            (ROI) in the image. (x, y) is the top-left corner, and (w, h)
+            are the dimensions of the rectangle.
+    """
+    # extract lon lat from geojson file or dict
+    if isinstance(geojson, str):
+        with open(geojson, 'r') as f:
+            a = json.load(f)
+    else:
+        a = geojson
+
+    if a["type"] == "FeatureCollection":
+        a = a["features"][0]
+
+    if a["type"] == "Feature":
+        a = a["geometry"]
+
+    ll_poly = np.array(a["coordinates"][0])
+    box_d = roi_process(rpc, ll_poly, utm_zone=utm_zone)
+    return box_d
+
+
+def roi_process(rpc, ll_poly, utm_zone=None):
+    """
+    Convert a longitude/latitude polygon into a rectangular
+    bounding box in image coordinates
+
+    Args:
+        rpc (rpcm.RPCModel): camera model
+        ll_poly (array): 2D array of shape (n, 2) containing the vertices
+            (longitude, latitude) of the polygon
+        utm_zone: force the zone number to be used when defining `utm_bbx`.
+            If not specified, the default UTM zone for the given geography
+            is used.
+
+    Returns:
+        x, y, w, h: four integers defining a rectangular region of interest
+            (ROI) in the image. (x, y) is the top-left corner, and (w, h)
+            are the dimensions of the rectangle.
+    """
+    if not utm_zone:
+        utm_zone = libs2p.geographiclib.compute_utm_zone(*ll_poly.mean(axis=0))
+    cfg['utm_zone'] = utm_zone
+
+    # convert lon lat polygon to utm
+    utm_proj = libs2p.geographiclib.utm_proj(utm_zone)
+    easting, northing = pyproj.transform(
+        pyproj.Proj(init="epsg:4326"), utm_proj, ll_poly[:, 0], ll_poly[:, 1]
+    )
+    east_min = min(easting)
+    east_max = max(easting)
+    nort_min = min(northing)
+    nort_max = max(northing)
+    cfg['utm_bbx'] = (east_min, east_max, nort_min, nort_max)
 
     # project lon lat vertices into the image
-    lon, lat = np.mean(ll_poly, axis=0)
-    if exogenous_dem is not None:
-        with rasterio.open(exogenous_dem) as src:
-            x, y = geographiclib.pyproj_transform(lon, lat, 4326, src.crs.to_epsg())
-            z = list(src.sample([(x, y)]))[0][0]
-            if exogenous_dem_geoid_mode is True:
-                z = geographiclib.geoid_to_ellipsoid(lat, lon, z)
-    elif use_srtm:
-        z = srtm4.srtm4(lon, lat)
-    else:
-        z = rpc.alt_offset
-    img_pts = rpc.projection(ll_poly[:, 0], ll_poly[:, 1], z)
+    img_pts = rpc.projection(ll_poly[:, 0], ll_poly[:, 1], rpc.alt_offset)
+    img_pts = list(zip(*img_pts))
 
     # return image roi
-    x, y, w, h = common.bounding_box2D(list(zip(*img_pts)))
+    x, y, w, h = libs2p.common.bounding_box2D(img_pts)
     return {'x': x, 'y': y, 'w': w, 'h': h}
 
 
@@ -405,7 +489,7 @@ def corresponding_roi(rpc1, rpc2, x, y, w, h):
     xx, yy = find_corresponding_point(rpc1, rpc2, a, b, c)[0:2]
 
     # return coordinates of the bounding box in im2
-    out = common.bounding_box2D(np.vstack([xx, yy]).T)
+    out = libs2p.common.bounding_box2D(np.vstack([xx, yy]).T)
     return np.round(out)
 
 
@@ -540,6 +624,6 @@ def gsd_from_rpc(rpc):
     Returns:
         float (meters per pixel)
     """
-    a = geographiclib.lonlat_to_geocentric(*rpc.localization(0, 0, 0), alt=0)
-    b = geographiclib.lonlat_to_geocentric(*rpc.localization(1, 0, 0), alt=0)
+    a = libs2p.geographiclib.lonlat_to_geocentric(*rpc.localization(0, 0, 0), alt=0)
+    b = libs2p.geographiclib.lonlat_to_geocentric(*rpc.localization(1, 0, 0), alt=0)
     return np.linalg.norm(np.asarray(b) - np.asarray(a))

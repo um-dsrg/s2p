@@ -7,16 +7,18 @@ import os
 import sys
 import json
 import copy
+import shutil
 import rasterio
+import warnings
 import numpy as np
 import rpcm
+import math
 
-from s2p import common
-from s2p import geographiclib
-from s2p import rpc_utils
-from s2p import masking
-from s2p import parallel
-from s2p.config import cfg
+import libs2p.common
+import libs2p.rpc_utils
+import libs2p.masking
+import libs2p.parallel
+from libs2p.config import cfg
 
 # This function is here as a workaround to python bug #24313 When
 # using python3, json does not know how to serialize numpy.int64 on
@@ -66,18 +68,25 @@ def check_parameters(d):
         else:
             img['rpcm'] = rpcm.rpc_from_geotiff(img['img'])
 
-    # verify that an input ROI is defined
+    # verify that roi or path to preview file are defined
     if 'full_img' in d and d['full_img']:
-        sz = common.image_size_gdal(d['images'][0]['img'])
+        sz = libs2p.common.image_size_gdal(d['images'][0]['img'])
         d['roi'] = {'x': 0, 'y': 0, 'w': sz[0], 'h': sz[1]}
     elif 'roi' in d and dict_has_keys(d['roi'], ['x', 'y', 'w', 'h']):
         pass
+    elif 'roi_utm' in d and dict_has_keys(d['roi_utm'], ['utm_band',
+                                                         'hemisphere',
+                                                         'x', 'y', 'w', 'h']):
+        d['roi'] = libs2p.rpc_utils.utm_roi_to_img_roi(d['images'][0]['rpcm'],
+                                                d['roi_utm'])
+    elif 'roi_kml' in d:
+        # this call defines cfg['utm_zone'] and cfg['utm_bbx'] as side effects
+        d['roi'] = libs2p.rpc_utils.kml_roi_process(d['images'][0]['rpcm'],
+                                             d['roi_kml'], d.get('utm_zone'))
     elif 'roi_geojson' in d:
-        ll_poly = geographiclib.read_lon_lat_poly_from_geojson(d['roi_geojson'])
-        d['roi'] = rpc_utils.roi_process(d['images'][0]['rpcm'], ll_poly,
-                                         use_srtm=d.get('use_srtm'),
-                                         exogenous_dem=d.get('exogenous_dem'),
-                                         exogenous_dem_geoid_mode=d.get('exogenous_dem_geoid_mode'))
+        # this call defines cfg['utm_zone'] and cfg['utm_bbx'] as side effects
+        d['roi'] = libs2p.rpc_utils.geojson_roi_process(d['images'][0]['rpcm'],
+                                                 d['roi_geojson'], d.get('utm_zone'))
     else:
         print('ERROR: missing or incomplete roi definition')
         sys.exit(1)
@@ -89,9 +98,10 @@ def check_parameters(d):
     d['roi']['h'] = int(np.ceil(d['roi']['h']))
 
     # warn about unknown parameters. The known parameters are those defined in
-    # the global config.cfg dictionary, plus the mandatory 'images' and 'roi'
+    # the global config.cfg dictionary, plus the mandatory 'images' and 'roi' or
+    # 'roi_utm'
     for k in d.keys():
-        if k not in ['images', 'roi', 'roi_geojson']:
+        if k not in ['images', 'roi', 'roi_kml', 'roi_geojson', 'roi_utm', 'utm_zone']:
             if k not in cfg:
                 print('WARNING: ignoring unknown parameter {}.'.format(k))
 
@@ -128,24 +138,21 @@ def build_cfg(user_cfg):
             if d in cfg['images'][i] and cfg['images'][i][d] is not None and not os.path.isabs(cfg['images'][i][d]):
                 cfg['images'][i][d] = os.path.abspath(cfg['images'][i][d])
 
-    # get out_crs
-    if 'out_crs' not in cfg or cfg['out_crs'] is None:
+    # get utm zone
+    if 'utm_zone' not in cfg or cfg['utm_zone'] is None:
         x, y, w, h = [cfg['roi'][k] for k in ['x', 'y', 'w', 'h']]
-        utm_zone = rpc_utils.utm_zone(cfg['images'][0]['rpcm'], x, y, w, h)
-        epsg_code = geographiclib.epsg_code_from_utm_zone(utm_zone)
-        cfg['out_crs'] = "epsg:{}".format(epsg_code)
-    geographiclib.pyproj_crs(cfg['out_crs'])
+        cfg['utm_zone'] = rpc_utils.utm_zone(cfg['images'][0]['rpcm'], x, y, w, h)
 
     # get image ground sampling distance
-    cfg['gsd'] = rpc_utils.gsd_from_rpc(cfg['images'][0]['rpcm'])
+    cfg['gsd'] = libs2p.rpc_utils.gsd_from_rpc(cfg['images'][0]['rpcm'])
 
 
 def make_dirs():
     """
     Create directories needed to run s2p.
     """
-    common.mkdir_p(cfg['out_dir'])
-    common.mkdir_p(os.path.expandvars(cfg['temporary_dir']))
+    libs2p.common.mkdir_p(cfg['out_dir'])
+    libs2p.common.mkdir_p(os.path.expandvars(cfg['temporary_dir']))
 
     # store a json dump of the config.cfg dictionary
     with open(os.path.join(cfg['out_dir'], 'config.json'), 'w') as f:
@@ -162,12 +169,14 @@ def adjust_tile_size():
     """
 
     tile_w = min(cfg['roi']['w'], cfg['tile_size'])  # tile width
-    ntx = int(np.round(float(cfg['roi']['w']) / tile_w))
+    #ntx = int(np.round(float(cfg['roi']['w']) / tile_w))
+    ntx = math.ceil((float(cfg['roi']['w']) / tile_w))
     # ceil so that, if needed, the last tile is slightly smaller
     tile_w = int(np.ceil(float(cfg['roi']['w']) / ntx))
 
     tile_h = min(cfg['roi']['h'], cfg['tile_size'])  # tile height
-    nty = int(np.round(float(cfg['roi']['h']) / tile_h))
+    #nty = int(np.round(float(cfg['roi']['h']) / tile_h))
+    nty = math.ceil((float(cfg['roi']['h']) / tile_h))
     tile_h = int(np.ceil(float(cfg['roi']['h']) / nty))
 
     print('tile size: {} {}'.format(tile_w, tile_h))
@@ -295,7 +304,7 @@ def is_this_tile_useful(x, y, w, h, images_sizes):
     # check if the tile is partly contained in at least one other image
     rpc = cfg['images'][0]['rpcm']
     for img, size in zip(cfg['images'][1:], images_sizes[1:]):
-        coords = rpc_utils.corresponding_roi(rpc, img['rpcm'], x, y, w, h)
+        coords = libs2p.rpc_utils.corresponding_roi(rpc, img['rpcm'], x, y, w, h)
         if rectangles_intersect(coords, (0, 0, size[1], size[0])):
             break  # the tile is partly contained
     else:  # we've reached the end of the loop hence the tile is not contained
@@ -304,7 +313,7 @@ def is_this_tile_useful(x, y, w, h, images_sizes):
     roi_msk = cfg['images'][0]['roi']
     cld_msk = cfg['images'][0]['cld']
     wat_msk = cfg['images'][0]['wat']
-    mask = masking.image_tile_mask(x, y, w, h, roi_msk, cld_msk, wat_msk,
+    mask = libs2p.masking.image_tile_mask(x, y, w, h, roi_msk, cld_msk, wat_msk,
                                    images_sizes[0], cfg['border_margin'])
     return True, mask
 
@@ -343,12 +352,11 @@ def tiles_full_info(tw, th, tiles_txt, create_masks=False):
                 images_sizes.append(f.shape)
 
         # compute all masks in parallel as numpy arrays
-        tiles_usefulnesses = parallel.launch_calls(is_this_tile_useful,
+        tiles_usefulnesses = libs2p.parallel.launch_calls(is_this_tile_useful,
                                                    tiles_coords,
                                                    cfg['max_processes'],
                                                    images_sizes,
-                                                   tilewise=False,
-                                                   timeout=cfg['timeout'])
+                                                   tilewise=False)
 
         # discard useless tiles from neighborhood_coords_dict
         discarded_tiles = set(x for x, (b, _) in zip(tiles_coords, tiles_usefulnesses) if not b)
@@ -365,9 +373,9 @@ def tiles_full_info(tw, th, tiles_txt, create_masks=False):
             tiles.append(tile)
 
             # make tiles directories and store json configuration dumps
-            common.mkdir_p(tile['dir'])
+            libs2p.common.mkdir_p(tile['dir'])
             for i in range(1, len(cfg['images'])):
-                common.mkdir_p(os.path.join(tile['dir'], 'pair_{}'.format(i)))
+                libs2p.common.mkdir_p(os.path.join(tile['dir'], 'pair_{}'.format(i)))
 
             # save a json dump of the tile configuration
             tile_cfg = copy.deepcopy(cfg)
@@ -384,8 +392,9 @@ def tiles_full_info(tw, th, tiles_txt, create_masks=False):
                 json.dump(tile_cfg, f, indent=2, default=workaround_json_int64)
 
             # save the mask
-            common.rasterio_write(os.path.join(tile['dir'], 'mask.png'),
+            libs2p.common.rasterio_write(os.path.join(tile['dir'], 'mask.png'),
                                   mask.astype(np.uint8))
+                                  
     else:
         if len(tiles_coords) == 1:
             tiles.append(create_tile(tiles_coords[0], neighborhood_coords_dict))

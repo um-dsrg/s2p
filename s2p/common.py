@@ -15,7 +15,7 @@ import numpy as np
 import rasterio
 
 
-from s2p.config import cfg
+from libs2p.config import cfg
 
 
 # silent rasterio NotGeoreferencedWarning
@@ -85,15 +85,15 @@ def run(cmd, env=os.environ, timeout=None, shell=False):
     Both stdout and stderr of the shell in which the command is run are those
     of the parent process.
     """
-    print("\nRUN: %s" % cmd)
+    #print("\nRUN: %s" % cmd)
     t = datetime.datetime.now()
     if not isinstance(cmd, list) and not shell:
         cmd = cmd.split()
-    subprocess.run(cmd, shell=shell, stdout=sys.stdout, stderr=sys.stderr,
+    #subprocess.run(cmd, shell=shell, stdout=sys.stdout, stderr=sys.stderr,
+    #               env=env, timeout=timeout, check=True)
+    subprocess.run(cmd, shell=shell, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
                    env=env, timeout=timeout, check=True)
-    print(datetime.datetime.now() - t)
-
-
+    #print(datetime.datetime.now() - t)
 def mkdir_p(path):
     """
     Create a directory without complaining if it already exists.
@@ -262,10 +262,9 @@ def points_apply_homography(H, pts):
 
     # convert the input points to homogeneous coordinates
     if len(pts[0]) < 2:
-        raise ValueError(
-            "The input must be a numpy array"
-            "of 2D points, one point per line"
-        )
+        print("""points_apply_homography: ERROR the input must be a numpy array
+          of 2D points, one point per line""")
+        return
     pts = np.hstack((pts[:, 0:2], pts[:, 0:1]*0+1))
 
     # apply the transformation

@@ -6,8 +6,8 @@ import sys
 import traceback
 import multiprocessing
 
-from s2p import common
-from s2p.config import cfg
+import libs2p.common
+from libs2p.config import cfg
 
 
 def show_progress(a):
@@ -46,7 +46,7 @@ def tilewise_wrapper(fun, *args, **kwargs):
         traceback.print_exc()
         raise
 
-    common.garbage_cleanup()
+    libs2p.common.garbage_cleanup()
     if not cfg['debug']:  # close logs
         sys.stdout = sys.__stdout__
         sys.stderr = sys.__stderr__
@@ -55,8 +55,7 @@ def tilewise_wrapper(fun, *args, **kwargs):
     return out
 
 
-def launch_calls(fun, list_of_args, nb_workers, *extra_args, tilewise=True,
-                 timeout=600):
+def launch_calls(fun, list_of_args, nb_workers, *extra_args, tilewise=True):
     """
     Run a function several times in parallel with different given inputs.
 
@@ -65,10 +64,9 @@ def launch_calls(fun, list_of_args, nb_workers, *extra_args, tilewise=True,
         list_of_args: list of (first positional) arguments passed to fun, one
             per call
         nb_workers: number of calls run simultaneously
+        tilewise (bool): whether the calls are run tilewise or not
         extra_args (optional): tuple containing extra arguments to be passed to
             fun (same value for all calls)
-        tilewise (bool): whether the calls are run tilewise or not
-        timeout (int): timeout for each function call (in seconds)
 
     Return:
         list of outputs
@@ -99,12 +97,12 @@ def launch_calls(fun, list_of_args, nb_workers, *extra_args, tilewise=True,
 
     for r in results:
         try:
-            outputs.append(r.get(timeout))
+            outputs.append(r.get(cfg['mgm_timeout']))  # wait at most 10 min per call
         except KeyboardInterrupt:
             pool.terminate()
             sys.exit(1)
 
     pool.close()
     pool.join()
-    common.print_elapsed_time()
+    libs2p.common.print_elapsed_time()
     return outputs

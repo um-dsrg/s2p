@@ -9,17 +9,23 @@ import shutil
 import numpy as np
 import rasterio
 
-from s2p.config import cfg
-from s2p import common
+from libs2p.config import cfg
+import libs2p.common
 
 
-def average_if_close(x, threshold):
+def old_average_if_close(x, threshold):
     """
     """
     if np.nanmax(x) - np.nanmin(x) > threshold:
         return np.nan
     else:
         return np.nanmedian(x)
+
+# mChen 20200305
+def average_if_close(x, threshold):
+    """
+    """
+    return np.nanmedian(x)
 
 
 def merge_n(output, inputs, offsets, averaging='average_if_close', threshold=1):

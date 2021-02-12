@@ -12,8 +12,11 @@ import rasterio as rio
 from numpy.ctypeslib import ndpointer
 import ransac
 
-from s2p import rpc_utils
-from s2p import estimation
+import libs2p.common
+import libs2p.rpc_utils
+import libs2p.estimation
+from libs2p.config import cfg
+import sys
 
 # Locate sift4ctypes library and raise an ImportError if it can not be
 # found This call will raise an exception if library can not be found,
@@ -22,9 +25,11 @@ from s2p import estimation
 # TODO: This is kind of ugly. Cleaner way to do this is to update
 # LD_LIBRARY_PATH, which we should do once we have a proper config file
 here = os.path.dirname(os.path.abspath(__file__))
-sift4ctypes = os.path.join(os.path.dirname(here), 'lib', 'libsift4ctypes.so')
-lib = ctypes.CDLL(sift4ctypes)
+#sift4ctypes = os.path.join(os.path.dirname(here), 'lib', 'libsift4ctypes.so')
 
+version = sys.version_info
+sift4ctypes = os.path.join(sys.prefix,'lib/python%d.%d/site-packages/'%(int(version[0]),int(version[1])), 'lib', 'libsift4ctypes.so')
+lib = ctypes.CDLL(sift4ctypes)
 
 # Filter warnings from rasterio reading files wihtout georeferencing
 warnings.filterwarnings("ignore", category=rio.errors.NotGeoreferencedWarning)
@@ -123,25 +128,6 @@ def image_keypoints(im, x, y, w, h, max_nb=None, thresh_dog=0.0133, nb_octaves=8
     return keypoints
 
 
-def string_dump_of_keypoint_and_descriptor(k):
-    """
-    Return a string representing a keypoint and its descriptor.
-
-    Args:
-        k (array_like): list of 132 floats, the first four elements are the
-            keypoint (x, y, scale, orientation), the 128 following elements are
-            the coefficients of the SIFT descriptor and take integer values
-            between 0 and 255.
-
-    Return:
-        string dump of the descriptor, such as for example
-        "342.254 003.570 0.91346 2.36788 000 001 005 000 000 000 028 029 179..."
-    """
-    s = "{:8.3f} {:8.3f} {:7.3f} {: 5.3f} ".format(*k[:4])
-    s += " ".join("{:3d}".format(int(x)) for x in k[4:])
-    return s
-
-
 def keypoints_match(k1, k2, method='relative', sift_thresh=0.6, F=None,
                     epipolar_threshold=10, model=None, ransac_max_err=0.3):
     """
@@ -153,7 +139,7 @@ def keypoints_match(k1, k2, method='relative', sift_thresh=0.6, F=None,
         k2 (array): numpy array of shape (m, 132), where each row represents a
             sift keypoint
         method (optional, default is 'relative'): flag ('relative' or
-            'absolute') indicating whether to use absolute distance or relative
+            'absolute') indicating wether to use absolute distance or relative
             distance
         sift_thresh (optional, default is 0.6): threshold for distance between SIFT
             descriptors. These descriptors are 128-vectors, whose coefficients
@@ -237,8 +223,7 @@ def keypoints_match_from_nparray(k1, k2, method, sift_threshold,
     return matches.reshape((nb_matches.value, 4))
 
 
-def matches_on_rpc_roi(im1, im2, rpc1, rpc2, x, y, w, h,
-                       method, sift_thresh, epipolar_threshold):
+def matches_on_rpc_roi(im1, im2, rpc1, rpc2, x, y, w, h):
     """
     Compute a list of SIFT matches between two images on a given roi.
 
@@ -251,27 +236,28 @@ def matches_on_rpc_roi(im1, im2, rpc1, rpc2, x, y, w, h,
         x, y, w, h: four integers defining the rectangular ROI in the first
             image. (x, y) is the top-left corner, and (w, h) are the dimensions
             of the rectangle.
-        method, sift_thresh, epipolar_threshold: see docstring of
-            s2p.sift.keypoints_match()
 
     Returns:
         matches: 2D numpy array containing a list of matches. Each line
             contains one pair of points, ordered as x1 y1 x2 y2.
             The coordinate system is that of the full images.
     """
-    x2, y2, w2, h2 = rpc_utils.corresponding_roi(rpc1, rpc2, x, y, w, h)
+    x2, y2, w2, h2 = libs2p.rpc_utils.corresponding_roi(rpc1, rpc2, x, y, w, h)
 
     # estimate an approximate affine fundamental matrix from the rpcs
-    rpc_matches = rpc_utils.matches_from_rpc(rpc1, rpc2, x, y, w, h, 5)
-    F = estimation.affine_fundamental_matrix(rpc_matches)
+    rpc_matches = libs2p.rpc_utils.matches_from_rpc(rpc1, rpc2, x, y, w, h, 5)
+    F = libs2p.estimation.affine_fundamental_matrix(rpc_matches)
+
+    # sift matching method:
+    method = 'relative' if cfg['relative_sift_match_thresh'] is True else 'absolute'
 
     # if less than 10 matches, lower thresh_dog. An alternative would be ASIFT
     thresh_dog = 0.0133
-    for _ in range(2):
+    for i in range(2):
         p1 = image_keypoints(im1, x, y, w, h, thresh_dog=thresh_dog)
         p2 = image_keypoints(im2, x2, y2, w2, h2, thresh_dog=thresh_dog)
-        matches = keypoints_match(p1, p2, method, sift_thresh, F,
-                                  epipolar_threshold=epipolar_threshold,
+        matches = keypoints_match(p1, p2, method, cfg['sift_match_thresh'], F,
+                                  epipolar_threshold=cfg['max_pointing_error'],
                                   model='fundamental')
         if matches is not None and matches.ndim == 2 and matches.shape[0] > 10:
             break

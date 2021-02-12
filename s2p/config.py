@@ -15,7 +15,7 @@ cfg = {}
 cfg['out_dir'] = "s2p_output"
 
 # path to directory where (many) temporary files will be stored
-cfg['temporary_dir'] = "s2p_tmp"
+cfg['temporary_dir'] = "s2p_tmp2"
 
 # temporary files are erased when s2p terminates. Switch to False to keep them
 cfg['clean_tmp'] = True
@@ -38,16 +38,8 @@ cfg['vertical_margin'] = 10  # for regularity
 # max number of processes launched in parallel. None means the number of available cores
 cfg['max_processes'] = None
 
-# max number of processes launched in parallel for stereo_matching
-# Uses the value of cfg['max_processes'] if None
-cfg['max_processes_stereo_matching'] = None
-
 # max number of OMP threads used by programs compiled with openMP
 cfg['omp_num_threads'] = 1
-
-# timeout in seconds, after which a function that runs on a single tile is not
-# waited for
-cfg['timeout'] = 600
 
 # debug mode (more verbose logs and intermediate results saved)
 cfg['debug'] = False
@@ -72,9 +64,6 @@ cfg['sift_match_thresh'] = 0.6
 
 # disp range expansion facto
 cfg['disp_range_extra_margin'] = 0.2
-
-# Maximum disparity range allowed in block matching
-cfg['max_disp_range'] = None
 
 # estimate rectification homographies either blindly using the rpc data or from
 # the images actual content thanks to sift matches
@@ -118,14 +107,7 @@ cfg['disp_range_method'] = "wider_sift_exogenous"
 cfg['disp_range_exogenous_low_margin'] = -10
 cfg['disp_range_exogenous_high_margin'] = +100
 
-# whether or not to use SRTM DEM (downloaded from internet) to estimate:
-#   - the average ground altitude (to project the input geographic AOI to the
-#     correct place in the input images)
-#   - a reasonable altitude range (to get a better rectification when
-#     "rectification_method" is set to "rpc")
-cfg['use_srtm'] = False
-
-# exogenous dem. If set, it superseeds SRTM.
+# exogenous dem
 cfg['exogenous_dem'] = None
 cfg['exogenous_dem_geoid_mode'] = True
 
@@ -148,7 +130,7 @@ cfg['stereo_regularity_multiplier'] = 1.0
 # number of directions explored for regularization
 cfg['mgm_nb_directions'] = 8
 # timeout in seconds, after which a running mgm process will be killed
-cfg['mgm_timeout'] = 600
+cfg['mgm_timeout'] = 60000
 
 # remove isolated 3d points in height maps
 cfg['3d_filtering_r'] = None  # radius in meters
@@ -156,11 +138,3 @@ cfg['3d_filtering_n'] = None  # number of points
 
 # clean height maps outliers
 cfg['cargarse_basura'] = True
-
-# Output coordinate reference system
-# All formats accepted by `pyproj.CRS()` are allowed, for example:
-# 32740 (int interpreted as an EPSG code), or
-# "epsg:32740+5773" (authority string), or
-# "+proj=utm +zone=40 +south +datum=WGS84 +units=m +vunits=m +no_defs +type=crs" (proj4 string)
-# If None, the local UTM zone will be used
-cfg['out_crs'] = None
