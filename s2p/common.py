@@ -223,9 +223,14 @@ def image_apply_homography(out, im, H, w, h):
     """
     # write the matrix to a string
     hij = " ".join(str(x) for x in H.flatten())
-
+    
+    cmd = 'homography {} -h {} {} {} {}'.format("'"+im+"'", "'"+hij+"'", "'"+out+"'",int(w), int(h))
+    #print(cmd)
+    subprocess.call(["homography", im, "-h", hij, out, "%d" % w, "%d" % h])
+    exit()
+    #os.system(cmd)
     # apply the homography
-    run(["homography", im, "-h", hij, out, "%d" % w, "%d" % h])
+    #run(["homography", im, "-h", hij, out, "%d" % w, "%d" % h])
 
 
 def image_qauto(im, out=None):
