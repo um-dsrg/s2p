@@ -12,7 +12,7 @@ import tensorflow as tf
 from datetime import datetime
 from tqdm import tqdm
 #from process_functional import *
-import libmccnn.process_functional_Bi
+import LibMccnn.process_functional_Bi
 
 from skimage import io as io #numpy version has to be ==1.15.0
 from scipy.signal import medfilt2d

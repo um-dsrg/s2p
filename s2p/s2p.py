@@ -48,7 +48,7 @@ import libs2p.visualisation
 import libs2p.ply
 import libs2p.matchfstBi
 
-import libmccnn
+import LibMccnn
 
 def pointing_correction(tile, i):
     """
