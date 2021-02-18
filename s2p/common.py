@@ -89,10 +89,10 @@ def run(cmd, env=os.environ, timeout=None, shell=False):
     t = datetime.datetime.now()
     if not isinstance(cmd, list) and not shell:
         cmd = cmd.split()
-    #subprocess.run(cmd, shell=shell, stdout=sys.stdout, stderr=sys.stderr,
-    #               env=env, timeout=timeout, check=True)
-    subprocess.run(cmd, shell=shell, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
+    subprocess.run(cmd, shell=shell, stdout=sys.stdout, stderr=sys.stderr,
                    env=env, timeout=timeout, check=True)
+    #subprocess.run(cmd, shell=shell, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
+    #               env=env, timeout=timeout, check=True)
     #print(datetime.datetime.now() - t)
 def mkdir_p(path):
     """
@@ -226,11 +226,11 @@ def image_apply_homography(out, im, H, w, h):
     
     cmd = 'homography {} -h {} {} {} {}'.format("'"+im+"'", "'"+hij+"'", "'"+out+"'",int(w), int(h))
     #print(cmd)
-    subprocess.call(["homography", im, "-h", hij, out, "%d" % w, "%d" % h])
-    exit()
+    #subprocess.call(["homography", im, "-h", hij, out, "%d" % w, "%d" % h])
+    #exit()
     #os.system(cmd)
     # apply the homography
-    #run(["homography", im, "-h", hij, out, "%d" % w, "%d" % h])
+    run(["homography", im, "-h", hij, out, "%d" % w, "%d" % h])
 
 
 def image_qauto(im, out=None):
