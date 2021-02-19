@@ -786,9 +786,6 @@ def main(user_cfg):
 
     # rectification step:
     print('rectifying tiles...')
-    print('This needs to be parallelized')
-    #for tile in tiles:
-    #    rectification_pair(tile,1)
     
     libs2p.parallel.launch_calls(rectification_pair, tiles_pairs, nb_workers)
 
