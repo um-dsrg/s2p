@@ -81,12 +81,12 @@ def compute_disparity_mccnn_basic(rect1, rect2, disp, disp_min, disp_max, resume
     height, width = left_image.shape[:2]
 
     # Compute the left and right features
-    featuresl, featuresr = libmccnn.process_functional_Bi.compute_features(left_image, right_image, None, None, patch_height, patch_width, resume,1)
+    featuresl, featuresr = LibMccnn.process_functional_Bi.compute_features(left_image, right_image, None, None, patch_height, patch_width, resume,1)
     #print("{}: features computed".format(datetime.now()))
     
     # Construct the left and right cost volumes
     #print('Construct the left and right cost volumes ...')
-    left_cost_volume, right_cost_volume = libmccnn.process_functional_Bi.compute_cost_volume(featuresl,featuresr,disp_min, disp_max)
+    left_cost_volume, right_cost_volume = LibMccnn.process_functional_Bi.compute_cost_volume(featuresl,featuresr,disp_min, disp_max)
 
     # Apply a median filter to the cost volumes
     left_cost_volume = median_cost_volume(left_cost_volume)
@@ -94,16 +94,16 @@ def compute_disparity_mccnn_basic(rect1, rect2, disp, disp_min, disp_max, resume
     
     # Compute the left disparity map
     print('Compute the left disparity map')
-    left_disparity_map = libmccnn.process_functional_Bi.disparity_selection(left_cost_volume, np.arange(disp_min, disp_max+1,1))
+    left_disparity_map = LibMccnn.process_functional_Bi.disparity_selection(left_cost_volume, np.arange(disp_min, disp_max+1,1))
     
     # Compute the right disparity map
     print('Compute the right disparity map')
     #right_disparity_map = -libmccnn.process_functional_Bi.disparity_selection(right_cost_volume, np.arange(disp_min, disp_max+1,1))
-    right_disparity_map = libmccnn.process_functional_Bi.disparity_selection(right_cost_volume, np.arange(disp_min, disp_max+1,1))
+    right_disparity_map = LibMccnn.process_functional_Bi.disparity_selection(right_cost_volume, np.arange(disp_min, disp_max+1,1))
     
     # Estimate the disparity map aligned with the left view
     print('Compute the left right consistency')
-    disparity_map = libmccnn.process_functional_Bi.left_right_consistency(left_disparity_map, right_disparity_map)
+    disparity_map = LibMccnn.process_functional_Bi.left_right_consistency(left_disparity_map, right_disparity_map)
 
     # Save the negative disparity since this correlates more with the disparity map
     disparity_map = -disparity_map
