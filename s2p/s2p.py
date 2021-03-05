@@ -32,6 +32,7 @@ import shutil
 import rasterio
 from skimage.transform import warp, AffineTransform
 import matplotlib.pyplot as plt
+from skimage import io as io
 
 from   libs2p.config import cfg
 import libs2p.common
@@ -271,8 +272,13 @@ def stereo_matching_mccnn_laf(tile,i):
     img_path = out_dir
     confidence_disparity,confidence_map = LAF.computeLafDisp.compute_confidence_disparity(LAF_model_dir, img_path)
 
-
-
+    # save as pgm and pfm
+    disp = os.path.join(out_dir, 'selected_disp.tif')
+    confidence_disparity = -confidence_disparity
+    io.imsave(disp, confidence_disparity)
+    conf = os.path.join(out_dir, 'selected_conf.tif')
+    confidence_map = (confidence_map*(256.*256.-1)).astype(np.uint16)
+    io.imsave(conf, confidence_map)
 
     if cfg['clean_intermediate']:
         if len(cfg['images']) > 2:
