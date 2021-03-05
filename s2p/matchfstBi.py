@@ -17,7 +17,7 @@ import LibMccnn.process_functional_Bi
 from skimage import io as io #numpy version has to be ==1.15.0
 from scipy.signal import medfilt2d
 
-def median_cost_volume(cost_volume,kernel_size = 3):
+def median_cost_volume(cost_volume,kernel_size = 5):
     for i in range(len(cost_volume)):
         # Compute the median filter on the cost volume
         cost_volume[i,:,:] = medfilt2d(cost_volume[i,:,:],kernel_size)
