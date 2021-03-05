@@ -48,6 +48,7 @@ import libs2p.visualisation
 import libs2p.ply
 import libs2p.matchfstBi
 
+import LAF.computeLafDisp
 import LibMccnn
 
 def pointing_correction(tile, i):
@@ -264,6 +265,14 @@ def stereo_matching_mccnn_laf(tile,i):
     
     # add margin around masked pixels
     libs2p.masking.erosion(mask, mask, cfg['msk_erosion'])
+
+    # computing LAF-Net confidence and disparity
+    LAF_model_dir = cfg["laf_model_dir"]
+    img_path = out_dir
+    confidence_disparity,confidence_map = LAF.computeLafDisp.compute_confidence_disparity(LAF_model_dir, img_path)
+
+
+
 
     if cfg['clean_intermediate']:
         if len(cfg['images']) > 2:
@@ -846,7 +855,7 @@ def main(user_cfg):
     libs2p.parallel.launch_calls(stereo_matching, tiles_pairs, nb_workers)
     #for tile in tiles:
     #    stereo_matching(tile,1)
-    #exit()
+
     # Note: The output of the estimated disparities also includes several nan values. At 
     # some point these will be converted to -9999 which is marked in the analysis to indicated 
     # an unknown pixel value.
