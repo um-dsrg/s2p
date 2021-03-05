@@ -110,6 +110,103 @@ def compute_disparity_mccnn_basic(rect1, rect2, disp, disp_min, disp_max, resume
     
     # save as pgm and pfm
     io.imsave(disp, disparity_map)
+
+def compute_disparity_mccnn_laf(rect1, rect2, disp, disp_min, disp_max, resume):
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
+    patch_size=11
+    patch_height = patch_size
+    patch_width = patch_size
+
+    ####################
+    # do matching
+    # get data path
+    left_path = rect1
+    right_path = rect2
+
+    # generate output path
+    #out_img_path = disp
+    #out_time_path = os.path.join(res_dir, out_time_file)
+    #out_imgR_path = os.path.join(img_dir, out_imgR_file)
+
+    # reading images
+    left_image = io.imread(left_path).astype(np.float32)
+    right_image = io.imread(right_path).astype(np.float32)
+    left_image = (left_image - np.mean(left_image, axis=(0, 1))) / np.std(left_image, axis=(0, 1))
+    right_image = (right_image - np.mean(right_image, axis=(0, 1))) / np.std(right_image, axis=(0, 1))
+    left_image = np.expand_dims(left_image, axis=2)
+    right_image = np.expand_dims(right_image, axis=2)
+    print("{}: images read".format(datetime.now()))
+    
+    
+    ####################
+    # limit disparity bounds
+    disp_min = [disp_min]
+    disp_max = [disp_max]
+    np.alltrue(len(disp_min) == len(disp_max))
+    for dim in range(len(disp_min)):
+        if disp_min[dim] is not None and disp_max[dim] is not None:
+            image_size = left_image.shape
+            if disp_max[dim] - disp_min[dim] > image_size[dim]:
+                center = 0.5 * (disp_min[dim] + disp_max[dim])
+                disp_min[dim] = int(center - 0.5 * image_size[dim])
+                disp_max[dim] = int(center + 0.5 * image_size[dim])
+        # round disparity bounds
+        if disp_min[dim] is not None:
+            disp_min[dim] = int(np.floor(disp_min[dim]))
+        if disp_max is not None:
+            disp_max[dim] = int(np.ceil(disp_max[dim]))
+    disp_min = disp_min[0]
+    disp_max = disp_max[0]
+    
+    print((disp_min, disp_max))
+    # start timer for time file
+    stTime = time.time()
+    
+    # Derive the dimensions of the two images
+    height, width = left_image.shape[:2]
+
+    # Compute the left and right features
+    featuresl, featuresr = LibMccnn.process_functional_Bi.compute_features(left_image, right_image, None, None, patch_height, patch_width, resume,1)
+    #print("{}: features computed".format(datetime.now()))
+    
+    # Construct the left and right cost volumes
+    #print('Construct the left and right cost volumes ...')
+    left_cost_volume, right_cost_volume = LibMccnn.process_functional_Bi.compute_cost_volume(featuresl,featuresr,disp_min, disp_max)
+    
+    # Apply a median filter to the cost volumes
+    left_cost_volume = median_cost_volume(left_cost_volume)
+    right_cost_volume = median_cost_volume(right_cost_volume)
+    
+    # Compute the left disparity map
+    print('Compute the left disparity map')
+    left_disparity_map = LibMccnn.process_functional_Bi.disparity_selection(left_cost_volume, np.arange(disp_min, disp_max+1,1))
+    
+    # Compute the right disparity map
+    print('Compute the right disparity map')
+    #right_disparity_map = -libmccnn.process_functional_Bi.disparity_selection(right_cost_volume, np.arange(disp_min, disp_max+1,1))
+    right_disparity_map = LibMccnn.process_functional_Bi.disparity_selection(right_cost_volume, np.arange(disp_min, disp_max+1,1))
+    
+    # Estimate the disparity map aligned with the left view
+    print('Compute the left right consistency')
+    disparity_map = LibMccnn.process_functional_Bi.left_right_consistency(left_disparity_map, right_disparity_map)
+
+    # Save the negative disparity since this correlates more with the disparity map
+    disparity_map = -disparity_map
+    
+    # save as pgm and pfm
+    io.imsave(disp, disparity_map)
+  
+    # save disparity and cost volume for LAF-Net
+    left_disparity_file = disp.replace('rectified_disp.tif','disp0MCCNN.npy')
+    right_disparity_file = disp.replace('rectified_disp.tif','disp1MCCNN.npy')
+    left_cost_file = disp.replace('rectified_disp.tif','cost0MCCNN.npy')
+    right_cost_file = disp.replace('rectified_disp.tif','cost1MCCNN.npy')
+    np.save(left_disparity_file,left_disparity_map)
+    np.save(right_disparity_file,right_disparity_map)
+    np.save(left_cost_file,left_cost_volume)
+    np.save(right_cost_file,right_cost_volume)
+
 '''
 def compute_disparity_mccnn(rect1, rect2, disp, disp_min,disp_max):
     args = parser.parse_args()

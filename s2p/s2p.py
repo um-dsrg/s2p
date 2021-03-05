@@ -225,6 +225,52 @@ def stereo_matching_mccnn_basic(tile,i):
         libs2p.common.remove(rect2)
         libs2p.common.remove(os.path.join(out_dir,'disp_min_max.txt'))
 
+def stereo_matching_mccnn_laf(tile,i):
+    """
+    Compute the disparity of a pair of images on a given tile.
+
+    Args:
+        tile: dictionary containing the information needed to process a tile.
+        i: index of the processed pair
+    """
+    out_dir = os.path.join(tile['dir'], 'pair_{}'.format(i))
+    x, y = tile['coordinates'][:2]
+
+    outputs = ['rectified_mask.png', 'rectified_disp.tif']
+
+    if os.path.exists(os.path.join(out_dir, 'stderr.log')):
+        print('disparity estimation: stderr.log exists')
+        print('pair_{} not processed on tile {} {}'.format(i, x, y))
+        return
+
+    print('estimating disparity on tile {} {} pair {}...'.format(x, y, i))
+    print(os.path.join(out_dir, 'disp_min_max.txt'))
+    rect1 = os.path.join(out_dir, 'rectified_ref.tif')
+    rect2 = os.path.join(out_dir, 'rectified_sec.tif')
+    disp = os.path.join(out_dir, 'rectified_disp.tif')
+    mask = os.path.join(out_dir, 'rectified_mask.png')
+    disp_min, disp_max = np.loadtxt(os.path.join(out_dir, 'disp_min_max.txt'))
+    disp_min, disp_max = int(np.floor(disp_min)), int(np.ceil(disp_max)) #
+
+    # Determine the model to be loaded
+    resume = os.path.join(cfg['mccnn_model_dir'], 'checkpoint')
+    #sub_pixel_interpolation = cfg['sub_pixel_interpolation']
+    #filter_cost_volumes = cfg['filter_cost_volumes']
+    
+    #libs2p.matchfstBi.compute_disparity_mccnn_basic(rect1, rect2, disp, disp_min, disp_max,resume)
+    libs2p.matchfstBi.compute_disparity_mccnn_laf(rect1, rect2, disp, disp_min, disp_max,resume)
+    #libs2p.matchfstBi.compute_disparity_mccnn_basic(rect2, rect1, disp, disp_min, disp_max,resume)
+    libs2p.block_matching.create_rejection_mask(disp, rect1, rect2, mask)
+    
+    # add margin around masked pixels
+    libs2p.masking.erosion(mask, mask, cfg['msk_erosion'])
+
+    if cfg['clean_intermediate']:
+        if len(cfg['images']) > 2:
+            libs2pcommon.remove(rect1)
+        libs2p.common.remove(rect2)
+        libs2p.common.remove(os.path.join(out_dir,'disp_min_max.txt'))
+
 
 def stereo_matching_sgm(tile,i):
     """
@@ -794,6 +840,8 @@ def main(user_cfg):
         stereo_matching = stereo_matching_mccnn_basic
     elif cfg['matching_algorithm'] == 'sgbm':
         stereo_matching = stereo_matching_sgm
+    elif cfg['matching_algorithm'] == 'mccnn_laf':
+        stereo_matching = stereo_matching_mccnn_laf
         
     libs2p.parallel.launch_calls(stereo_matching, tiles_pairs, nb_workers)
     #for tile in tiles:
